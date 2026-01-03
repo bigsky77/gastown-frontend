@@ -313,16 +313,417 @@ app.get('/api/rigs/:rig/polecats', async (req, res) => {
 
 // Sling issue to rig
 app.post('/api/sling', async (req, res) => {
-  const { issue, rig } = req.body;
-  if (!issue || !rig) {
-    return res.status(400).json({ error: 'issue and rig required' });
+  const { issue, rig, message, naked } = req.body;
+  if (!issue) {
+    return res.status(400).json({ error: 'issue required' });
   }
-  const result = await runGt(`sling ${issue} ${rig} --json`);
+  let cmd = `sling ${issue}`;
+  if (rig) cmd += ` ${rig}`;
+  if (message) cmd += ` -m "${message.replace(/"/g, '\\"')}"`;
+  if (naked) cmd += ' --naked';
+
+  const result = await runGt(cmd);
   if (result.success) {
-    const data = parseJsonOutput(result.output);
-    res.json(data || { success: true, raw: result.output });
+    res.json({ success: true, issue, rig: rig || 'self', output: result.output });
   } else {
     res.status(500).json({ error: result.error });
+  }
+});
+
+// ==================== CREW MANAGEMENT ====================
+
+// List crew workers
+app.get('/api/crew', async (req, res) => {
+  const { rig } = req.query;
+  // Run from rig directory to get crew list
+  const cwd = rig ? path.join(TOWN_ROOT, rig, 'mayor', 'rig') : TOWN_ROOT;
+  const result = await runGt('crew list', cwd);
+  if (result.success) {
+    // Parse text output into structured data
+    const lines = result.output.split('\n');
+    const crews = [];
+    for (const line of lines) {
+      const match = line.match(/^\s*(\S+)\s+\[(running|stopped)\]\s*(.*)$/);
+      if (match) {
+        crews.push({
+          name: match[1],
+          status: match[2],
+          info: match[3].trim()
+        });
+      }
+    }
+    res.json({ crews, rig: rig || 'all', raw: result.output });
+  } else {
+    res.status(500).json({ error: result.error, rig });
+  }
+});
+
+// Add crew worker
+app.post('/api/crew', async (req, res) => {
+  const { name, rig } = req.body;
+  if (!name) {
+    return res.status(400).json({ error: 'name required' });
+  }
+  const cwd = rig ? path.join(TOWN_ROOT, rig) : TOWN_ROOT;
+  const result = await runGt(`crew add ${name}`, cwd);
+  if (result.success) {
+    res.json({ success: true, name, output: result.output });
+  } else {
+    res.status(500).json({ error: result.error });
+  }
+});
+
+// Start crew worker
+app.post('/api/crew/:name/start', async (req, res) => {
+  const { rig } = req.body;
+  const cwd = rig ? path.join(TOWN_ROOT, rig) : TOWN_ROOT;
+  const result = await runGt(`crew start ${req.params.name}`, cwd);
+  if (result.success) {
+    res.json({ success: true, name: req.params.name, output: result.output });
+  } else {
+    res.status(500).json({ error: result.error });
+  }
+});
+
+// Get crew worker status
+app.get('/api/crew/:name/status', async (req, res) => {
+  const { rig } = req.query;
+  const cwd = rig ? path.join(TOWN_ROOT, rig) : TOWN_ROOT;
+  const result = await runGt(`crew status ${req.params.name}`, cwd);
+  if (result.success) {
+    res.json({ name: req.params.name, output: result.output });
+  } else {
+    res.status(500).json({ error: result.error });
+  }
+});
+
+// Remove crew worker
+app.delete('/api/crew/:name', async (req, res) => {
+  const { rig } = req.query;
+  const cwd = rig ? path.join(TOWN_ROOT, rig) : TOWN_ROOT;
+  const result = await runGt(`crew remove ${req.params.name}`, cwd);
+  if (result.success) {
+    res.json({ success: true, name: req.params.name });
+  } else {
+    res.status(500).json({ error: result.error });
+  }
+});
+
+// Restart crew worker
+app.post('/api/crew/:name/restart', async (req, res) => {
+  const { rig } = req.query;
+  const cwd = rig ? path.join(TOWN_ROOT, rig) : TOWN_ROOT;
+  const result = await runGt(`crew restart ${req.params.name}`, cwd);
+  if (result.success) {
+    res.json({ success: true, name: req.params.name, output: result.output });
+  } else {
+    res.status(500).json({ error: result.error });
+  }
+});
+
+// ==================== AGENT CONTROL ====================
+
+// Nudge an agent (send message to Claude session)
+app.post('/api/nudge', async (req, res) => {
+  const { target, message } = req.body;
+  if (!target || !message) {
+    return res.status(400).json({ error: 'target and message required' });
+  }
+  // Escape quotes in message
+  const safeMessage = message.replace(/"/g, '\\"');
+  const result = await runGt(`nudge ${target} "${safeMessage}"`);
+  if (result.success) {
+    res.json({ success: true, target, output: result.output });
+  } else {
+    res.status(500).json({ error: result.error });
+  }
+});
+
+// Get agent state
+app.get('/api/agents/:name/state', async (req, res) => {
+  const result = await runGt(`agents state ${req.params.name}`);
+  if (result.success) {
+    res.json({ name: req.params.name, state: result.output.trim() });
+  } else {
+    res.status(500).json({ error: result.error });
+  }
+});
+
+// Set agent state
+app.put('/api/agents/:name/state', async (req, res) => {
+  const { state } = req.body;
+  if (!state) {
+    return res.status(400).json({ error: 'state required' });
+  }
+  const result = await runGt(`agents state ${req.params.name} ${state}`);
+  if (result.success) {
+    res.json({ success: true, name: req.params.name, state });
+  } else {
+    res.status(500).json({ error: result.error });
+  }
+});
+
+// ==================== HOOK MANAGEMENT ====================
+
+// Get current hook status
+app.get('/api/hook', async (req, res) => {
+  const result = await runGt('hook status --json');
+  if (result.success) {
+    const data = parseJsonOutput(result.output);
+    res.json(data || { raw: result.output });
+  } else {
+    // Try without --json
+    const result2 = await runGt('hook status');
+    res.json({ raw: result2.output || result.error });
+  }
+});
+
+// Attach work to hook
+app.post('/api/hook', async (req, res) => {
+  const { beadId, subject } = req.body;
+  if (!beadId) {
+    return res.status(400).json({ error: 'beadId required' });
+  }
+  let cmd = `hook ${beadId}`;
+  if (subject) cmd += ` -s "${subject}"`;
+  const result = await runGt(cmd);
+  if (result.success) {
+    res.json({ success: true, beadId, output: result.output });
+  } else {
+    res.status(500).json({ error: result.error });
+  }
+});
+
+// Detach work from hook (unsling)
+app.delete('/api/hook', async (req, res) => {
+  const result = await runGt('unsling');
+  if (result.success) {
+    res.json({ success: true, output: result.output });
+  } else {
+    res.status(500).json({ error: result.error });
+  }
+});
+
+// ==================== MOLECULE/WORKFLOW ====================
+
+// Get molecule status (current work)
+app.get('/api/mol/status', async (req, res) => {
+  const result = await runGt('mol status');
+  if (result.success) {
+    res.json({ output: result.output });
+  } else {
+    res.status(500).json({ error: result.error });
+  }
+});
+
+// Get current step
+app.get('/api/mol/current', async (req, res) => {
+  const result = await runGt('mol current');
+  if (result.success) {
+    res.json({ output: result.output });
+  } else {
+    res.status(500).json({ error: result.error });
+  }
+});
+
+// Get molecule progress
+app.get('/api/mol/progress', async (req, res) => {
+  const result = await runGt('mol progress');
+  if (result.success) {
+    res.json({ output: result.output });
+  } else {
+    res.status(500).json({ error: result.error });
+  }
+});
+
+// Complete current step
+app.post('/api/mol/step/done', async (req, res) => {
+  const result = await runGt('mol step done');
+  if (result.success) {
+    res.json({ success: true, output: result.output });
+  } else {
+    res.status(500).json({ error: result.error });
+  }
+});
+
+// Attach molecule to hook
+app.post('/api/mol/attach', async (req, res) => {
+  const { molId } = req.body;
+  if (!molId) {
+    return res.status(400).json({ error: 'molId required' });
+  }
+  const result = await runGt(`mol attach ${molId}`);
+  if (result.success) {
+    res.json({ success: true, molId, output: result.output });
+  } else {
+    res.status(500).json({ error: result.error });
+  }
+});
+
+// Detach molecule from hook
+app.post('/api/mol/detach', async (req, res) => {
+  const result = await runGt('mol detach');
+  if (result.success) {
+    res.json({ success: true, output: result.output });
+  } else {
+    res.status(500).json({ error: result.error });
+  }
+});
+
+// ==================== FORMULAS ====================
+
+// List available formulas
+app.get('/api/formulas', async (req, res) => {
+  const result = await runGt('formula list --json');
+  if (result.success) {
+    const data = parseJsonOutput(result.output);
+    res.json(data || { formulas: [], raw: result.output });
+  } else {
+    // Try without --json
+    const result2 = await runGt('formula list');
+    if (result2.success) {
+      // Parse text output
+      const lines = result2.output.split('\n').filter(l => l.trim());
+      const formulas = lines.map(l => ({ name: l.trim() }));
+      res.json({ formulas, raw: result2.output });
+    } else {
+      res.json({ formulas: [], raw: result2.output || result.error });
+    }
+  }
+});
+
+// Pour a formula (create molecule from template)
+app.post('/api/formulas/:name/pour', async (req, res) => {
+  const { target, params } = req.body;
+  let cmd = `pour ${req.params.name}`;
+  if (target) cmd += ` ${target}`;
+  // Add any parameters
+  if (params) {
+    for (const [key, value] of Object.entries(params)) {
+      cmd += ` --${key}="${value}"`;
+    }
+  }
+  const result = await runGt(cmd);
+  if (result.success) {
+    res.json({ success: true, formula: req.params.name, output: result.output });
+  } else {
+    res.status(500).json({ error: result.error });
+  }
+});
+
+// ==================== HANDOFF ====================
+
+// Create handoff (save context for next session)
+app.post('/api/handoff', async (req, res) => {
+  const { message, beadId } = req.body;
+  let cmd = 'handoff';
+  if (message) cmd += ` -m "${message.replace(/"/g, '\\"')}"`;
+  if (beadId) cmd += ` ${beadId}`;
+  const result = await runGt(cmd);
+  if (result.success) {
+    res.json({ success: true, output: result.output });
+  } else {
+    res.status(500).json({ error: result.error });
+  }
+});
+
+// ==================== CONVOY EXTENDED ====================
+
+// Close convoy
+app.post('/api/convoys/:id/close', async (req, res) => {
+  const result = await runGt(`convoy close ${req.params.id}`);
+  if (result.success) {
+    res.json({ success: true, id: req.params.id });
+  } else {
+    res.status(500).json({ error: result.error });
+  }
+});
+
+// Add issue to convoy
+app.post('/api/convoys/:id/track', async (req, res) => {
+  const { issueId } = req.body;
+  if (!issueId) {
+    return res.status(400).json({ error: 'issueId required' });
+  }
+  const result = await runGt(`convoy track ${req.params.id} ${issueId}`);
+  if (result.success) {
+    res.json({ success: true, convoyId: req.params.id, issueId });
+  } else {
+    res.status(500).json({ error: result.error });
+  }
+});
+
+// ==================== QUICK ACTIONS ====================
+
+// Sling work with auto-convoy (main entry point for starting work)
+app.post('/api/work/start', async (req, res) => {
+  const { issue, target, title } = req.body;
+  if (!issue) {
+    return res.status(400).json({ error: 'issue required' });
+  }
+
+  // Default target is self
+  const targetArg = target || '';
+
+  // Sling creates auto-convoy
+  const result = await runGt(`sling ${issue} ${targetArg}`.trim());
+  if (result.success) {
+    res.json({
+      success: true,
+      issue,
+      target: target || 'self',
+      output: result.output
+    });
+  } else {
+    res.status(500).json({ error: result.error });
+  }
+});
+
+// Quick create issue and sling it
+app.post('/api/work/quick', async (req, res) => {
+  const { title, description, target, type = 'task', priority = 2 } = req.body;
+  if (!title) {
+    return res.status(400).json({ error: 'title required' });
+  }
+
+  // Create issue first
+  let createCmd = `create --title="${title}" --type=${type} --priority=${priority}`;
+  if (description) createCmd += ` --description="${description}"`;
+  createCmd += ' --json';
+
+  const createResult = await runBd(createCmd);
+  if (!createResult.success) {
+    return res.status(500).json({ error: 'Failed to create issue', detail: createResult.error });
+  }
+
+  const issueData = parseJsonOutput(createResult.output);
+  const issueId = issueData?.id;
+
+  if (!issueId) {
+    return res.status(500).json({ error: 'Failed to parse issue ID', raw: createResult.output });
+  }
+
+  // If target specified, sling it
+  if (target) {
+    const slingResult = await runGt(`sling ${issueId} ${target}`);
+    if (slingResult.success) {
+      res.json({
+        success: true,
+        issue: issueData,
+        slung: true,
+        target,
+        slingOutput: slingResult.output
+      });
+    } else {
+      res.json({
+        success: true,
+        issue: issueData,
+        slung: false,
+        slingError: slingResult.error
+      });
+    }
+  } else {
+    res.json({ success: true, issue: issueData, slung: false });
   }
 });
 
