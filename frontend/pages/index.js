@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import Head from 'next/head';
 import SessionPeek from '../components/SessionPeek';
 import AgentLifecycle from '../components/AgentLifecycle';
+import IssueDetail from '../components/IssueDetail';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:3001/ws';
@@ -43,6 +44,7 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [wsConnected, setWsConnected] = useState(false);
   const [actionResult, setActionResult] = useState(null);
+  const [selectedIssue, setSelectedIssue] = useState(null);
 
   const wsRef = useRef(null);
 
@@ -315,7 +317,7 @@ export default function Dashboard() {
                   {activeTab === 'control' && <ControlPanel rigs={rigs} issues={issues}
                     onCreateIssue={createIssue} onSling={slingIssue} onQuickWork={quickWork} onNudge={nudgeAgent} status={status} />}
                   {activeTab === 'convoys' && <ConvoyList convoys={convoys} />}
-                  {activeTab === 'issues' && <IssueList issues={issues} rigs={rigs} onSling={slingIssue} />}
+                  {activeTab === 'issues' && <IssueList issues={issues} rigs={rigs} onSling={slingIssue} onIssueClick={setSelectedIssue} />}
                   {activeTab === 'agents' && <AgentList status={status} onNudge={nudgeAgent} />}
                   {activeTab === 'peek' && <SessionPeek status={status} onNudge={nudgeAgent} apiUrl={API_URL} />}
                   {activeTab === 'lifecycle' && <AgentLifecycle onRefresh={fetchAll} />}
@@ -341,6 +343,16 @@ export default function Dashboard() {
           </div>
         </div>
       </div>
+
+      {/* Issue Detail Panel */}
+      {selectedIssue && (
+        <IssueDetail
+          issue={selectedIssue}
+          onClose={() => setSelectedIssue(null)}
+          onUpdate={fetchIssues}
+          onIssueClick={setSelectedIssue}
+        />
+      )}
     </>
   );
 }
@@ -667,7 +679,7 @@ function AgentList({ status, onNudge }) {
 }
 
 // Issue List with sling actions
-function IssueList({ issues, rigs, onSling }) {
+function IssueList({ issues, rigs, onSling, onIssueClick }) {
   const [slingModal, setSlingModal] = useState(null);
   const [target, setTarget] = useState('');
 
@@ -733,7 +745,7 @@ function IssueList({ issues, rigs, onSling }) {
         </thead>
         <tbody>
           {issues.map(issue => (
-            <tr key={issue.id}>
+            <tr key={issue.id} style={{ cursor: 'pointer' }} onClick={() => onIssueClick?.(issue)}>
               <td><span style={{ fontFamily: 'monospace', color: 'var(--accent)' }}>{issue.id}</span></td>
               <td>{issue.title}</td>
               <td>{issue.type || issue.issue_type || 'task'}</td>
@@ -741,7 +753,7 @@ function IssueList({ issues, rigs, onSling }) {
               <td><span className={`badge badge-${issue.status}`}>{issue.status}</span></td>
               <td>
                 <button className="btn btn-secondary" style={{ padding: '4px 8px', fontSize: '0.8rem' }}
-                  onClick={() => setSlingModal(issue)}>
+                  onClick={(e) => { e.stopPropagation(); setSlingModal(issue); }}>
                   🎯 Sling
                 </button>
               </td>
