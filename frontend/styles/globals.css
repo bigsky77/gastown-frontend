@@ -493,3 +493,16 @@ label {
 .form-group {
   margin-bottom: 16px;
 }
+
+/* Slide-in panel animation */
+@keyframes slideIn {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
+/* Badge for hooked status */
+.badge-hooked { background: #2a2a1a; color: var(--warning); }

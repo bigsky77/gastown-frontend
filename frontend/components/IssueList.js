@@ -1,6 +1,6 @@
 import { useState } from 'react';
 
-export default function IssueList({ issues, rigs, onSling }) {
+export default function IssueList({ issues, rigs, onSling, onIssueClick }) {
   const [slingModal, setSlingModal] = useState(null);
   const [target, setTarget] = useState('');
 
@@ -66,7 +66,7 @@ export default function IssueList({ issues, rigs, onSling }) {
         </thead>
         <tbody>
           {issues.map(issue => (
-            <tr key={issue.id}>
+            <tr key={issue.id} style={{ cursor: 'pointer' }} onClick={() => onIssueClick?.(issue)}>
               <td><span style={{ fontFamily: 'monospace', color: 'var(--accent)' }}>{issue.id}</span></td>
               <td>{issue.title}</td>
               <td>{issue.type || issue.issue_type || 'task'}</td>
@@ -74,7 +74,7 @@ export default function IssueList({ issues, rigs, onSling }) {
               <td><span className={`badge badge-${issue.status}`}>{issue.status}</span></td>
               <td>
                 <button className="btn btn-secondary" style={{ padding: '4px 8px', fontSize: '0.8rem' }}
-                  onClick={() => setSlingModal(issue)}>
+                  onClick={(e) => { e.stopPropagation(); setSlingModal(issue); }}>
                   🎯 Sling
                 </button>
               </td>

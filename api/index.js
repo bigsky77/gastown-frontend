@@ -281,6 +281,56 @@ app.patch('/api/issues/:id', async (req, res) => {
   }
 });
 
+// Get issue dependencies
+app.get('/api/deps/:id', async (req, res) => {
+  const blockedByResult = await runBd(`dep list ${req.params.id} --json`);
+  const blocksResult = await runBd(`dep list --blocks ${req.params.id} --json`);
+
+  let blockedBy = [];
+  let blocks = [];
+
+  if (blockedByResult.success) {
+    try {
+      const data = JSON.parse(blockedByResult.output);
+      blockedBy = Array.isArray(data) ? data : (data.dependencies || []);
+    } catch {}
+  }
+
+  if (blocksResult.success) {
+    try {
+      const data = JSON.parse(blocksResult.output);
+      blocks = Array.isArray(data) ? data : (data.dependencies || []);
+    } catch {}
+  }
+
+  res.json({ id: req.params.id, blockedBy, blocks });
+});
+
+// Get issue comments
+app.get('/api/issues/:id/comments', async (req, res) => {
+  const result = await runBd(`comments ${req.params.id} --json`);
+  if (result.success) {
+    const data = parseJsonOutput(result.output);
+    res.json(data || []);
+  } else {
+    res.json([]);
+  }
+});
+
+// Add comment to issue
+app.post('/api/issues/:id/comments', async (req, res) => {
+  const { text } = req.body;
+  if (!text) {
+    return res.status(400).json({ error: 'text required' });
+  }
+  const result = await runBd(`comment ${req.params.id} "${text.replace(/"/g, '\\"')}"`);
+  if (result.success) {
+    res.json({ success: true });
+  } else {
+    res.status(500).json({ error: result.error });
+  }
+});
+
 // Close issue
 app.post('/api/issues/:id/close', async (req, res) => {
   const { reason } = req.body;
