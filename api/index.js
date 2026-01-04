@@ -378,6 +378,17 @@ app.get('/api/issues/ready', async (req, res) => {
   }
 });
 
+// Get all blocked issues
+app.get('/api/issues/blocked', async (req, res) => {
+  const result = await runBd('blocked --json');
+  if (result.success) {
+    const data = parseJsonOutput(result.output);
+    res.json(data || []);
+  } else {
+    res.status(500).json({ error: result.error });
+  }
+});
+
 // Get single issue
 app.get('/api/issues/:id', async (req, res) => {
   const result = await runBd(`show ${req.params.id} --json`);
@@ -438,6 +449,125 @@ app.post('/api/issues/:id/close', async (req, res) => {
     res.json({ success: true });
   } else {
     res.status(500).json({ error: result.error });
+  }
+});
+
+// ==================== DEPENDENCY ENDPOINTS ====================
+
+// Get dependencies for an issue
+app.get('/api/issues/:id/deps', async (req, res) => {
+  const issueId = req.params.id;
+
+  // Get both directions in parallel
+  const [depsResult, dependentsResult] = await Promise.all([
+    runBd(`dep list ${issueId} --json`),           // What this issue depends on
+    runBd(`dep list ${issueId} --direction=up --json`)  // What depends on this issue
+  ]);
+
+  const blocks = [];      // Issues this one blocks (dependents)
+  const blocked_by = [];  // Issues this one is blocked by (dependencies)
+
+  if (depsResult.success) {
+    const deps = parseJsonOutput(depsResult.output);
+    if (Array.isArray(deps)) {
+      blocked_by.push(...deps);
+    }
+  }
+
+  if (dependentsResult.success) {
+    const dependents = parseJsonOutput(dependentsResult.output);
+    if (Array.isArray(dependents)) {
+      blocks.push(...dependents);
+    }
+  }
+
+  res.json({
+    issue: issueId,
+    blocks,      // Issues that depend on this one
+    blocked_by   // Issues this one depends on
+  });
+});
+
+// Add dependency to an issue
+app.post('/api/issues/:id/deps', async (req, res) => {
+  const { depends_on } = req.body;
+  if (!depends_on) {
+    return res.status(400).json({ error: 'depends_on required' });
+  }
+
+  const result = await runBd(`dep add ${req.params.id} ${depends_on}`);
+  if (result.success) {
+    res.json({ success: true, issue: req.params.id, depends_on, output: result.output });
+  } else {
+    res.status(500).json({ error: result.error });
+  }
+});
+
+// Remove dependency from an issue
+app.delete('/api/issues/:id/deps/:dep', async (req, res) => {
+  const result = await runBd(`dep remove ${req.params.id} ${req.params.dep}`);
+  if (result.success) {
+    res.json({ success: true, issue: req.params.id, removed: req.params.dep });
+  } else {
+    res.status(500).json({ error: result.error });
+  }
+});
+
+// Get full dependency graph for visualization
+app.get('/api/deps/graph', async (req, res) => {
+  const { format = 'json', issue } = req.query;
+
+  if (issue) {
+    // Get graph for a specific issue
+    const result = await runBd(`graph ${issue} --json`);
+    if (result.success) {
+      const data = parseJsonOutput(result.output);
+      res.json(data || { raw: result.output });
+    } else {
+      res.status(500).json({ error: result.error });
+    }
+  } else {
+    // Get full digraph format for all issues
+    if (format === 'digraph') {
+      const result = await runBd('list --format=digraph');
+      if (result.success) {
+        res.json({ format: 'digraph', data: result.output });
+      } else {
+        res.status(500).json({ error: result.error });
+      }
+    } else if (format === 'dot') {
+      const result = await runBd('list --format=dot');
+      if (result.success) {
+        res.json({ format: 'dot', data: result.output });
+      } else {
+        res.status(500).json({ error: result.error });
+      }
+    } else {
+      // Default: get all issues with their deps
+      const listResult = await runBd('list --json');
+      if (listResult.success) {
+        const issues = parseJsonOutput(listResult.output) || [];
+        // Build graph structure from blocked_by fields
+        const nodes = issues.map(i => ({
+          id: i.id,
+          title: i.title,
+          status: i.status,
+          priority: i.priority,
+          blocked_by: i.blocked_by || []
+        }));
+        const edges = [];
+        for (const issue of issues) {
+          if (issue.blocked_by) {
+            for (const dep of issue.blocked_by) {
+              edges.push({ from: dep, to: issue.id });
+            }
+          }
+        }
+        res.json({ nodes, edges });
+      } else {
+        res.status(500).json({ error: listResult.error });
+      }
+    }
   }
 });
 
@@ -965,7 +1095,27 @@ app.get('/api/events', async (req, res) => {
 // ==================== WEBSOCKET FOR REAL-TIME ====================
 
 const server = createServer(app);
-const wss = new WebSocketServer({ server, path: '/ws' });
+const wss = new WebSocketServer({ noServer: true });
+
+// WebSocket server for peek streaming
+const wssPeek = new WebSocketServer({ noServer: true });
+
+// Handle upgrade requests to route to correct WebSocket server
+server.on('upgrade', (request, socket, head) => {
+  const pathname = new URL(request.url, `http://${request.headers.host}`).pathname;
+
+  if (pathname === '/ws') {
+    wss.handleUpgrade(request, socket, head, (ws) => {
+      wss.emit('connection', ws, request);
+    });
+  } else if (pathname.startsWith('/ws/peek/')) {
+    wssPeek.handleUpgrade(request, socket, head, (ws) => {
+      wssPeek.emit('connection', ws, request);
+    });
+  } else {
+    socket.destroy();
+  }
+});
 
 // Track connected clients
 const clients = new Set();
@@ -984,6 +1134,91 @@ wss.on('connection', (ws) => {
   ws.on('close', () => {
     clients.delete(ws);
     console.log('WebSocket client disconnected');
+  });
+});
+
+// Track active peek streams
+const peekStreams = new Map(); // polecatId -> { process, clients: Set }
+
+wssPeek.on('connection', (ws, request) => {
+  const pathname = new URL(request.url, `http://${request.headers.host}`).pathname;
+  const polecatId = decodeURIComponent(pathname.replace('/ws/peek/', ''));
+
+  console.log(`Peek connection opened for: ${polecatId}`);
+
+  // Check if we already have a stream for this polecat
+  if (peekStreams.has(polecatId)) {
+    const stream = peekStreams.get(polecatId);
+    stream.clients.add(ws);
+    ws.send(JSON.stringify({ type: 'info', data: { message: 'Joined existing stream' } }));
+  } else {
+    // Start a new peek process
+    const peekProcess = spawn(GT_BIN, ['peek', polecatId], {
+      cwd: TOWN_ROOT,
+      env: { ...process.env, FORCE_COLOR: '1' }
+    });
+
+    const stream = { process: peekProcess, clients: new Set([ws]) };
+    peekStreams.set(polecatId, stream);
+
+    peekProcess.stdout.on('data', (data) => {
+      const lines = data.toString().split('\n');
+      lines.forEach(line => {
+        if (line.trim()) {
+          const msg = JSON.stringify({ type: 'output', data: line });
+          stream.clients.forEach(client => {
+            if (client.readyState === 1) client.send(msg);
+          });
+        }
+      });
+    });
+
+    peekProcess.stderr.on('data', (data) => {
+      const msg = JSON.stringify({ type: 'error', data: data.toString() });
+      stream.clients.forEach(client => {
+        if (client.readyState === 1) client.send(msg);
+      });
+    });
+
+    peekProcess.on('close', (code) => {
+      const msg = JSON.stringify({ type: 'info', data: { message: `Process exited with code ${code}` } });
+      stream.clients.forEach(client => {
+        if (client.readyState === 1) client.send(msg);
+      });
+      peekStreams.delete(polecatId);
+    });
+
+    peekProcess.on('error', (err) => {
+      const msg = JSON.stringify({ type: 'error', data: err.message });
+      stream.clients.forEach(client => {
+        if (client.readyState === 1) client.send(msg);
+      });
+      peekStreams.delete(polecatId);
+    });
+  }
+
+  ws.on('close', () => {
+    console.log(`Peek connection closed for: ${polecatId}`);
+    const stream = peekStreams.get(polecatId);
+    if (stream) {
+      stream.clients.delete(ws);
+      // If no more clients, kill the process after a delay
+      if (stream.clients.size === 0) {
+        setTimeout(() => {
+          const currentStream = peekStreams.get(polecatId);
+          if (currentStream && currentStream.clients.size === 0) {
+            currentStream.process.kill();
+            peekStreams.delete(polecatId);
+            console.log(`Peek process killed for: ${polecatId}`);
+          }
+        }, 5000); // 5 second grace period
+      }
+    }
+  });
+
+  ws.on('error', () => {
+    const stream = peekStreams.get(polecatId);
+    if (stream) stream.clients.delete(ws);
   });
 });
 
@@ -1039,5 +1274,6 @@ setInterval(async () => {
 server.listen(PORT, () => {
   console.log(`Gas Town API running on http://localhost:${PORT}`);
   console.log(`WebSocket available at ws://localhost:${PORT}/ws`);
+  console.log(`Peek WebSocket at ws://localhost:${PORT}/ws/peek/:polecat`);
   console.log(`Town root: ${TOWN_ROOT}`);
 });

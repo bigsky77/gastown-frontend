@@ -493,3 +493,49 @@ label {
 .form-group {
   margin-bottom: 16px;
 }
+
+/* Terminal / Session Peek styles */
+.terminal {
+  font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', Menlo, Monaco, 'Courier New', monospace;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  background: #0d1117;
+  color: #c9d1d9;
+  padding: 12px;
+  overflow: auto;
+}
+
+.terminal::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.terminal::-webkit-scrollbar-track {
+  background: #1a1a25;
+}
+
+.terminal::-webkit-scrollbar-thumb {
+  background: #333;
+  border-radius: 4px;
+}
+
+.terminal::-webkit-scrollbar-thumb:hover {
+  background: #444;
+}
+
+/* Session peek container */
+.session-peek {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 400px;
+}
+
+.session-peek .tabs {
+  flex-shrink: 0;
+}
+
+.session-peek .terminal {
+  flex: 1;
+  min-height: 0;
+}
