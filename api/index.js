@@ -13,6 +13,8 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 const TOWN_ROOT = process.env.TOWN_ROOT || '/home/bigsky/gt';
 const BEADS_DIR = path.join(TOWN_ROOT, '.beads');
+const GT_BIN = process.env.GT_BIN || '/home/bigsky/go/bin/gt';
+const BD_BIN = process.env.BD_BIN || '/home/bigsky/go/bin/bd';
 
 app.use(cors());
 app.use(express.json());
@@ -20,7 +22,7 @@ app.use(express.json());
 // Helper to run gt commands
 async function runGt(args, cwd = TOWN_ROOT) {
   try {
-    const { stdout, stderr } = await execAsync(`gt ${args}`, { cwd, timeout: 30000 });
+    const { stdout, stderr } = await execAsync(`${GT_BIN} ${args}`, { cwd, timeout: 30000 });
     return { success: true, output: stdout, stderr };
   } catch (error) {
     return { success: false, error: error.message, stderr: error.stderr };
@@ -30,7 +32,7 @@ async function runGt(args, cwd = TOWN_ROOT) {
 // Helper to run bd commands
 async function runBd(args, cwd = BEADS_DIR) {
   try {
-    const { stdout, stderr } = await execAsync(`bd ${args}`, { cwd, timeout: 30000 });
+    const { stdout, stderr } = await execAsync(`${BD_BIN} ${args}`, { cwd, timeout: 30000 });
     return { success: true, output: stdout, stderr };
   } catch (error) {
     return { success: false, error: error.message, stderr: error.stderr };
@@ -48,14 +50,74 @@ function parseJsonOutput(output) {
 
 // ==================== STATUS ENDPOINTS ====================
 
-// Town status
+// Town status - construct from parts since gt status --json doesn't exist
 app.get('/api/status', async (req, res) => {
-  const result = await runGt('status --json');
-  if (result.success) {
-    const data = parseJsonOutput(result.output);
-    res.json(data || { raw: result.output });
-  } else {
-    res.status(500).json({ error: result.error });
+  try {
+    // Get rigs
+    const rigsResult = await runGt('rig list');
+    const rigs = [];
+    if (rigsResult.success) {
+      const lines = rigsResult.output.split('\n');
+      let currentRig = null;
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith('Rigs in')) continue;
+        if (line.match(/^  \S/) && !line.match(/^\s{4}/)) {
+          if (currentRig) rigs.push(currentRig);
+          currentRig = { name: trimmed, polecats: 0, crew: 0, agents: [], running: 0 };
+        } else if (trimmed.startsWith('Polecats:') && currentRig) {
+          const match = trimmed.match(/Polecats:\s*(\d+)\s+Crew:\s*(\d+)/);
+          if (match) {
+            currentRig.polecats = parseInt(match[1]);
+            currentRig.crew = parseInt(match[2]);
+          }
+        }
+      }
+      if (currentRig) rigs.push(currentRig);
+    }
+
+    // Get issue counts
+    const issuesResult = await runBd('list --status=open --json');
+    let openIssues = 0;
+    if (issuesResult.success) {
+      try {
+        const issues = JSON.parse(issuesResult.output);
+        openIssues = Array.isArray(issues) ? issues.length : 0;
+      } catch {}
+    }
+
+    // Get convoy count
+    const convoysResult = await runGt('convoy list --json');
+    let activeConvoys = 0;
+    if (convoysResult.success) {
+      try {
+        const data = JSON.parse(convoysResult.output);
+        activeConvoys = data.convoys?.length || 0;
+      } catch {}
+    }
+
+    // Count running agents
+    let runningAgents = 0;
+    for (const rig of rigs) {
+      runningAgents += rig.polecats; // Approximate - could parse gt polecat list
+    }
+
+    res.json({
+      connected: true,
+      town: {
+        name: 'gt',
+        path: TOWN_ROOT,
+        rigs: rigs
+      },
+      stats: {
+        runningAgents,
+        activeConvoys,
+        openIssues,
+        rigCount: rigs.length
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message, connected: false });
   }
 });
 
