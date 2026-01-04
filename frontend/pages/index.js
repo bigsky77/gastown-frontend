@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import Head from 'next/head';
+import AgentLifecycle from '../components/AgentLifecycle';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:3001/ws';
@@ -294,10 +295,10 @@ export default function Dashboard() {
 
       <div className="container">
         <div className="tabs">
-          {['control', 'convoys', 'issues', 'agents', 'events'].map(tab => (
+          {['control', 'convoys', 'issues', 'agents', 'lifecycle', 'events'].map(tab => (
             <button key={tab} className={`tab ${activeTab === tab ? 'active' : ''}`}
               onClick={() => setActiveTab(tab)}>
-              {tab.charAt(0).toUpperCase() + tab.slice(1)}
+              {tab === 'lifecycle' ? 'Lifecycle' : tab.charAt(0).toUpperCase() + tab.slice(1)}
             </button>
           ))}
         </div>
@@ -315,6 +316,7 @@ export default function Dashboard() {
                   {activeTab === 'convoys' && <ConvoyList convoys={convoys} />}
                   {activeTab === 'issues' && <IssueList issues={issues} rigs={rigs} onSling={slingIssue} />}
                   {activeTab === 'agents' && <AgentList status={status} onNudge={nudgeAgent} />}
+                  {activeTab === 'lifecycle' && <AgentLifecycle onRefresh={fetchAll} />}
                   {activeTab === 'events' && <EventList events={events} />}
                 </>
               )}

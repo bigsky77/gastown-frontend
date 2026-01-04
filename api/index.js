@@ -336,14 +336,198 @@ app.post('/api/mail', async (req, res) => {
 
 // ==================== AGENT ENDPOINTS ====================
 
-// List agents
+// List all agents with lifecycle info (for AgentLifecycle component)
 app.get('/api/agents', async (req, res) => {
-  const result = await runGt('agents list --json');
-  if (result.success) {
-    const data = parseJsonOutput(result.output);
-    res.json(data || { agents: [], raw: result.output });
+  try {
+    // Get agents from gt agents list
+    const agentsResult = await runGt('agents list --json');
+    let agents = [];
+
+    if (agentsResult.success) {
+      const data = parseJsonOutput(agentsResult.output);
+      if (data?.agents) {
+        agents = data.agents;
+      }
+    }
+
+    // If no JSON output, parse text output
+    if (agents.length === 0 && agentsResult.success) {
+      const lines = agentsResult.output.split('\n').filter(l => l.trim());
+      for (const line of lines) {
+        // Parse lines like "mayor [running]" or "gtf/witness [stopped]"
+        const match = line.match(/^\s*(\S+)\s*\[(running|stopped|error)\]/i);
+        if (match) {
+          agents.push({
+            name: match[1],
+            address: match[1],
+            running: match[2].toLowerCase() === 'running',
+            status: match[2].toLowerCase()
+          });
+        }
+      }
+    }
+
+    // Add type categorization
+    agents = agents.map(a => ({
+      ...a,
+      type: getAgentType(a.name || a.address),
+      role: getAgentRole(a.name || a.address)
+    }));
+
+    res.json({ agents });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Helper to categorize agent types
+function getAgentType(name) {
+  if (name === 'mayor' || name.endsWith('/mayor')) return 'core';
+  if (name.includes('witness')) return 'witness';
+  if (name.includes('refinery')) return 'refinery';
+  if (name.includes('deacon')) return 'deacon';
+  if (name.includes('polecat') || name.includes('crew/')) return 'polecat';
+  return 'agent';
+}
+
+// Helper to get agent role description
+function getAgentRole(name) {
+  if (name === 'mayor' || name.endsWith('/mayor')) return 'Global Coordinator';
+  if (name.includes('witness')) return 'Worker Monitor';
+  if (name.includes('refinery')) return 'Merge Queue';
+  if (name.includes('deacon')) return 'Session Daemon';
+  if (name.includes('polecat') || name.includes('crew/')) return 'Worker';
+  return 'Agent';
+}
+
+// Start an agent
+app.post('/api/agents/:name/start', async (req, res) => {
+  const agentName = req.params.name;
+  const { rig } = req.body;
+
+  // Determine the command based on agent type
+  let result;
+  if (agentName.includes('polecat') || agentName.includes('crew/')) {
+    // For crew/polecats, use crew start
+    const crewName = agentName.split('/').pop();
+    const cwd = rig ? path.join(TOWN_ROOT, rig) : TOWN_ROOT;
+    result = await runGt(`crew start ${crewName}`, cwd);
+  } else if (agentName === 'deacon' || agentName.includes('/deacon')) {
+    // For deacon, use deacon start
+    const cwd = rig ? path.join(TOWN_ROOT, rig) : TOWN_ROOT;
+    result = await runGt('deacon start', cwd);
   } else {
-    res.status(500).json({ error: result.error });
+    // For other agents, try agents start
+    result = await runGt(`agents start ${agentName}`);
+  }
+
+  if (result.success) {
+    res.json({ success: true, agent: agentName, output: result.output });
+  } else {
+    res.status(500).json({ error: result.error, stderr: result.stderr });
+  }
+});
+
+// Stop an agent
+app.post('/api/agents/:name/stop', async (req, res) => {
+  const agentName = req.params.name;
+  const { rig } = req.body;
+
+  let result;
+  if (agentName.includes('polecat') || agentName.includes('crew/')) {
+    // For crew/polecats, use crew stop
+    const crewName = agentName.split('/').pop();
+    const cwd = rig ? path.join(TOWN_ROOT, rig) : TOWN_ROOT;
+    result = await runGt(`crew stop ${crewName}`, cwd);
+  } else if (agentName === 'deacon' || agentName.includes('/deacon')) {
+    const cwd = rig ? path.join(TOWN_ROOT, rig) : TOWN_ROOT;
+    result = await runGt('deacon stop', cwd);
+  } else {
+    result = await runGt(`agents stop ${agentName}`);
+  }
+
+  if (result.success) {
+    res.json({ success: true, agent: agentName, output: result.output });
+  } else {
+    res.status(500).json({ error: result.error, stderr: result.stderr });
+  }
+});
+
+// Restart an agent
+app.post('/api/agents/:name/restart', async (req, res) => {
+  const agentName = req.params.name;
+  const { rig } = req.body;
+
+  let result;
+  if (agentName.includes('polecat') || agentName.includes('crew/')) {
+    const crewName = agentName.split('/').pop();
+    const cwd = rig ? path.join(TOWN_ROOT, rig) : TOWN_ROOT;
+    result = await runGt(`crew restart ${crewName}`, cwd);
+  } else if (agentName === 'deacon' || agentName.includes('/deacon')) {
+    const cwd = rig ? path.join(TOWN_ROOT, rig) : TOWN_ROOT;
+    result = await runGt('deacon restart', cwd);
+  } else {
+    // Stop then start for generic agents
+    await runGt(`agents stop ${agentName}`);
+    result = await runGt(`agents start ${agentName}`);
+  }
+
+  if (result.success) {
+    res.json({ success: true, agent: agentName, output: result.output });
+  } else {
+    res.status(500).json({ error: result.error, stderr: result.stderr });
+  }
+});
+
+// Get agent logs
+app.get('/api/agents/:name/logs', async (req, res) => {
+  const agentName = req.params.name;
+  const { lines = 50, rig } = req.query;
+
+  try {
+    let logPath;
+    const rigPath = rig ? path.join(TOWN_ROOT, rig) : TOWN_ROOT;
+
+    // Determine log file location based on agent type
+    if (agentName === 'deacon' || agentName.includes('/deacon')) {
+      logPath = path.join(rigPath, '.runtime', 'deacon.log');
+    } else if (agentName.includes('witness')) {
+      logPath = path.join(rigPath, '.runtime', 'witness.log');
+    } else if (agentName.includes('refinery')) {
+      logPath = path.join(rigPath, '.runtime', 'refinery.log');
+    } else if (agentName.includes('polecat') || agentName.includes('crew/')) {
+      const workerName = agentName.split('/').pop();
+      logPath = path.join(rigPath, 'polecats', workerName, '.runtime', 'session.log');
+      // Also try crew path
+      if (!await fs.access(logPath).then(() => true).catch(() => false)) {
+        logPath = path.join(rigPath, 'crew', workerName, '.runtime', 'session.log');
+      }
+    } else if (agentName === 'mayor') {
+      logPath = path.join(TOWN_ROOT, 'mayor', '.runtime', 'session.log');
+    } else {
+      // Generic: try to find in .runtime
+      logPath = path.join(rigPath, '.runtime', `${agentName}.log`);
+    }
+
+    // Read last N lines of log
+    const content = await fs.readFile(logPath, 'utf-8');
+    const allLines = content.split('\n');
+    const lastLines = allLines.slice(-parseInt(lines)).join('\n');
+
+    res.json({
+      agent: agentName,
+      logPath,
+      lines: parseInt(lines),
+      content: lastLines
+    });
+  } catch (error) {
+    // Try alternative: use tail command
+    try {
+      const { stdout } = await execAsync(`tail -n ${lines} ${logPath} 2>/dev/null || echo "Log not found"`);
+      res.json({ agent: agentName, content: stdout, error: 'Log file may not exist' });
+    } catch {
+      res.json({ agent: agentName, content: '', error: 'Could not read logs' });
+    }
   }
 });
 
