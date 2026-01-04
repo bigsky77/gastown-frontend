@@ -255,6 +255,59 @@ app.get('/api/rigs/:name/status', async (req, res) => {
   });
 });
 
+// ==================== MERGE QUEUE ENDPOINTS ====================
+
+// List merge queue for a rig
+app.get('/api/rigs/:rig/mq', async (req, res) => {
+  const { status, worker, ready } = req.query;
+  let cmd = `mq list ${req.params.rig} --json`;
+  if (status) cmd += ` --status=${status}`;
+  if (worker) cmd += ` --worker=${worker}`;
+  if (ready === 'true') cmd += ' --ready';
+
+  const result = await runGt(cmd);
+  if (result.success) {
+    const data = parseJsonOutput(result.output);
+    res.json(data || { items: [], raw: result.output });
+  } else {
+    res.status(500).json({ error: result.error });
+  }
+});
+
+// Get detailed status of a merge request
+app.get('/api/rigs/:rig/mq/:id', async (req, res) => {
+  const result = await runGt(`mq status ${req.params.id}`);
+  if (result.success) {
+    res.json({ id: req.params.id, output: result.output });
+  } else {
+    res.status(500).json({ error: result.error });
+  }
+});
+
+// Retry a failed merge request
+app.post('/api/rigs/:rig/mq/:id/retry', async (req, res) => {
+  const result = await runGt(`mq retry ${req.params.id}`);
+  if (result.success) {
+    res.json({ success: true, id: req.params.id, output: result.output });
+  } else {
+    res.status(500).json({ error: result.error });
+  }
+});
+
+// Reject a merge request
+app.post('/api/rigs/:rig/mq/:id/reject', async (req, res) => {
+  const { reason } = req.body;
+  let cmd = `mq reject ${req.params.id}`;
+  if (reason) cmd += ` --reason="${reason.replace(/"/g, '\\"')}"`;
+
+  const result = await runGt(cmd);
+  if (result.success) {
+    res.json({ success: true, id: req.params.id, output: result.output });
+  } else {
+    res.status(500).json({ error: result.error });
+  }
+});
+
 // ==================== CONVOY ENDPOINTS ====================
 
 // List convoys
