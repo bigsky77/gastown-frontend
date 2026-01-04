@@ -163,6 +163,98 @@ app.get('/api/rigs', async (req, res) => {
   }
 });
 
+// Create rig
+app.post('/api/rigs', async (req, res) => {
+  const { name, repoUrl, remote } = req.body;
+  if (!name || !repoUrl) {
+    return res.status(400).json({ error: 'name and repoUrl required' });
+  }
+  let cmd = `rig add ${name} ${repoUrl}`;
+  if (remote) cmd += ` --remote=${remote}`;
+
+  const result = await runGt(cmd);
+  if (result.success) {
+    res.json({ success: true, name, repoUrl, output: result.output });
+  } else {
+    res.status(500).json({ error: result.error });
+  }
+});
+
+// Remove rig
+app.delete('/api/rigs/:name', async (req, res) => {
+  const { force } = req.query;
+  let cmd = `rig remove ${req.params.name}`;
+  if (force === 'true') cmd += ' --force';
+
+  const result = await runGt(cmd);
+  if (result.success) {
+    res.json({ success: true, name: req.params.name });
+  } else {
+    res.status(500).json({ error: result.error });
+  }
+});
+
+// Spawn polecat in a rig
+app.post('/api/rigs/:name/polecat', async (req, res) => {
+  const { name: polecatName, issue } = req.body;
+  let cmd = `polecat spawn ${req.params.name}`;
+  if (polecatName) cmd += ` --name=${polecatName}`;
+  if (issue) cmd += ` --issue=${issue}`;
+
+  const result = await runGt(cmd);
+  if (result.success) {
+    res.json({ success: true, rig: req.params.name, output: result.output });
+  } else {
+    res.status(500).json({ error: result.error });
+  }
+});
+
+// Get detailed rig status
+app.get('/api/rigs/:name/status', async (req, res) => {
+  const rigName = req.params.name;
+  const rigPath = path.join(TOWN_ROOT, rigName);
+
+  // Gather all status info in parallel
+  const [polecatResult, witnessResult, refineryResult] = await Promise.all([
+    runGt(`polecat list ${rigName}`),
+    runGt(`witness status`, rigPath),
+    runGt(`refinery status`, rigPath)
+  ]);
+
+  // Parse polecat list
+  const polecats = [];
+  if (polecatResult.success) {
+    const lines = polecatResult.output.split('\n');
+    for (const line of lines) {
+      const match = line.match(/^\s*(\S+)\s+\[(running|stopped|idle)\]\s*(.*)$/i);
+      if (match) {
+        polecats.push({
+          name: match[1],
+          status: match[2].toLowerCase(),
+          info: match[3].trim()
+        });
+      }
+    }
+  }
+
+  res.json({
+    rig: rigName,
+    polecats: {
+      list: polecats,
+      raw: polecatResult.output,
+      error: polecatResult.success ? null : polecatResult.error
+    },
+    witness: {
+      raw: witnessResult.output,
+      error: witnessResult.success ? null : witnessResult.error
+    },
+    refinery: {
+      raw: refineryResult.output,
+      error: refineryResult.success ? null : refineryResult.error
+    }
+  });
+});
+
 // ==================== CONVOY ENDPOINTS ====================
 
 // List convoys
