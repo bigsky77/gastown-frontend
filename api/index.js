@@ -463,6 +463,251 @@ app.get('/api/rigs/:rig/polecats', async (req, res) => {
   }
 });
 
+// ==================== AGENT LIFECYCLE ====================
+
+// Start an agent
+app.post('/api/agents/:name/start', async (req, res) => {
+  const { rig } = req.body;
+  const agentName = req.params.name;
+
+  // Determine the right command based on agent type
+  // Try polecat start first, fall back to generic agent start
+  let result;
+  if (rig) {
+    result = await runGt(`polecat start ${agentName}`, path.join(TOWN_ROOT, rig));
+  } else {
+    result = await runGt(`${agentName} start`);
+  }
+
+  if (result.success) {
+    res.json({ success: true, agent: agentName, output: result.output });
+  } else {
+    res.status(500).json({ error: result.error, stderr: result.stderr });
+  }
+});
+
+// Stop an agent
+app.post('/api/agents/:name/stop', async (req, res) => {
+  const agentName = req.params.name;
+  const result = await runGt(`stop ${agentName}`);
+
+  if (result.success) {
+    res.json({ success: true, agent: agentName, output: result.output });
+  } else {
+    res.status(500).json({ error: result.error, stderr: result.stderr });
+  }
+});
+
+// Restart an agent (stop + start)
+app.post('/api/agents/:name/restart', async (req, res) => {
+  const { rig } = req.body;
+  const agentName = req.params.name;
+
+  // Stop first
+  const stopResult = await runGt(`stop ${agentName}`);
+  if (!stopResult.success) {
+    // Log but continue - agent might not be running
+    console.log(`Stop failed for ${agentName}: ${stopResult.error}`);
+  }
+
+  // Brief delay to ensure clean shutdown
+  await new Promise(resolve => setTimeout(resolve, 500));
+
+  // Start
+  let startResult;
+  if (rig) {
+    startResult = await runGt(`polecat start ${agentName}`, path.join(TOWN_ROOT, rig));
+  } else {
+    startResult = await runGt(`${agentName} start`);
+  }
+
+  if (startResult.success) {
+    res.json({
+      success: true,
+      agent: agentName,
+      stopOutput: stopResult.output,
+      startOutput: startResult.output
+    });
+  } else {
+    res.status(500).json({
+      error: startResult.error,
+      stopOutput: stopResult.output,
+      stderr: startResult.stderr
+    });
+  }
+});
+
+// Get agent logs
+app.get('/api/agents/:name/logs', async (req, res) => {
+  const agentName = req.params.name;
+  const { lines = 100, follow } = req.query;
+
+  // Agent logs are typically in ~/.claude/projects/<path>/logs or journal
+  // Try multiple log sources
+  const logSources = [
+    // systemd journal for the agent
+    `journalctl -u gt-${agentName} -n ${lines} --no-pager 2>/dev/null`,
+    // Claude session logs
+    `tail -n ${lines} ~/.claude/projects/*/logs/${agentName}.log 2>/dev/null`,
+    // gt logs directory
+    `tail -n ${lines} ${TOWN_ROOT}/.logs/${agentName}.log 2>/dev/null`
+  ];
+
+  let logs = '';
+  let source = 'none';
+
+  for (const cmd of logSources) {
+    try {
+      const { stdout } = await execAsync(cmd, { timeout: 10000 });
+      if (stdout.trim()) {
+        logs = stdout;
+        source = cmd.split(' ')[0]; // journalctl or tail
+        break;
+      }
+    } catch {
+      // Try next source
+    }
+  }
+
+  // If follow is requested, note that real-time streaming needs WebSocket
+  if (follow === 'true') {
+    res.json({
+      agent: agentName,
+      lines: parseInt(lines),
+      logs,
+      source,
+      note: 'For real-time log streaming, connect to WebSocket at /ws and subscribe to agent logs'
+    });
+  } else {
+    res.json({
+      agent: agentName,
+      lines: parseInt(lines),
+      logs,
+      source
+    });
+  }
+});
+
+// ==================== SERVICES STATUS ====================
+
+// Get status of all Gas Town services
+app.get('/api/services/status', async (req, res) => {
+  const services = {
+    deacon: { status: 'unknown', pid: null, uptime: null },
+    witnesses: [],
+    refineries: [],
+    polecats: []
+  };
+
+  // Check Deacon status
+  try {
+    const deaconResult = await runGt('deacon status');
+    if (deaconResult.success) {
+      const output = deaconResult.output;
+      const pidMatch = output.match(/PID[:\s]+(\d+)/i);
+      const runningMatch = output.match(/running|active/i);
+      services.deacon = {
+        status: runningMatch ? 'running' : 'stopped',
+        pid: pidMatch ? parseInt(pidMatch[1]) : null,
+        raw: output.trim()
+      };
+    } else {
+      services.deacon.status = 'stopped';
+      services.deacon.error = deaconResult.error;
+    }
+  } catch (error) {
+    services.deacon.status = 'error';
+    services.deacon.error = error.message;
+  }
+
+  // Get rig list first
+  const rigsResult = await runGt('rig list');
+  const rigNames = [];
+  if (rigsResult.success) {
+    const lines = rigsResult.output.split('\n');
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (trimmed && !trimmed.startsWith('Rigs in') &&
+          !trimmed.startsWith('Polecats:') &&
+          !trimmed.startsWith('Agents:') &&
+          line.match(/^  \S/) && !line.match(/^\s{4}/)) {
+        rigNames.push(trimmed);
+      }
+    }
+  }
+
+  // Check each rig's services
+  for (const rigName of rigNames) {
+    const rigPath = path.join(TOWN_ROOT, rigName);
+
+    // Witness status
+    const witnessResult = await runGt('witness status', rigPath);
+    const witnessStatus = {
+      rig: rigName,
+      status: 'unknown',
+      pid: null
+    };
+    if (witnessResult.success) {
+      const output = witnessResult.output;
+      const pidMatch = output.match(/PID[:\s]+(\d+)/i);
+      const runningMatch = output.match(/running|active|watching/i);
+      witnessStatus.status = runningMatch ? 'running' : 'stopped';
+      witnessStatus.pid = pidMatch ? parseInt(pidMatch[1]) : null;
+      witnessStatus.raw = output.trim();
+    } else {
+      witnessStatus.status = 'stopped';
+    }
+    services.witnesses.push(witnessStatus);
+
+    // Refinery status
+    const refineryResult = await runGt('refinery status', rigPath);
+    const refineryStatus = {
+      rig: rigName,
+      status: 'unknown',
+      pid: null
+    };
+    if (refineryResult.success) {
+      const output = refineryResult.output;
+      const pidMatch = output.match(/PID[:\s]+(\d+)/i);
+      const runningMatch = output.match(/running|active|processing/i);
+      refineryStatus.status = runningMatch ? 'running' : 'stopped';
+      refineryStatus.pid = pidMatch ? parseInt(pidMatch[1]) : null;
+      refineryStatus.raw = output.trim();
+    } else {
+      refineryStatus.status = 'stopped';
+    }
+    services.refineries.push(refineryStatus);
+
+    // Polecats in this rig
+    const polecatResult = await runGt(`polecat list ${rigName}`);
+    if (polecatResult.success) {
+      const lines = polecatResult.output.split('\n');
+      for (const line of lines) {
+        const match = line.match(/^\s*(\S+)\s+\[(running|stopped|idle)\]/i);
+        if (match) {
+          services.polecats.push({
+            rig: rigName,
+            name: match[1],
+            status: match[2].toLowerCase()
+          });
+        }
+      }
+    }
+  }
+
+  // Summary health
+  const health = {
+    deaconOk: services.deacon.status === 'running',
+    witnessesOk: services.witnesses.every(w => w.status === 'running'),
+    refineriesOk: services.refineries.every(r => r.status === 'running'),
+    polecatsRunning: services.polecats.filter(p => p.status === 'running').length,
+    polecatsTotal: services.polecats.length
+  };
+  health.allHealthy = health.deaconOk && health.witnessesOk && health.refineriesOk;
+
+  res.json({ services, health, rigs: rigNames });
+});
+
 // ==================== SLING WORK ====================
 
 // Sling issue to rig
