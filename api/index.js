@@ -525,6 +525,136 @@ app.put('/api/agents/:name/state', async (req, res) => {
   }
 });
 
+// ==================== PEEK ENDPOINTS ====================
+
+// Track active peek sessions (SSE and WebSocket)
+const peekSessions = new Map();
+const wsPeekSessions = new Map();
+
+// List active peek sessions (must come before :polecat route)
+app.get('/api/peek', (req, res) => {
+  const sessions = [];
+
+  // SSE sessions
+  for (const [id, session] of peekSessions.entries()) {
+    sessions.push({
+      id,
+      type: 'sse',
+      target: session.target,
+      uptime: Date.now() - session.startTime
+    });
+  }
+
+  // WebSocket sessions
+  for (const [id, session] of wsPeekSessions.entries()) {
+    sessions.push({
+      id,
+      type: 'websocket',
+      target: session.target,
+      uptime: Date.now() - session.startTime
+    });
+  }
+
+  res.json({ sessions, count: sessions.length });
+});
+
+// SSE endpoint for streaming polecat session output
+app.get('/api/peek/:polecat', (req, res) => {
+  const { polecat } = req.params;
+  const { rig } = req.query;
+
+  // Set up SSE headers
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no'); // Disable nginx buffering
+  res.flushHeaders();
+
+  // Build the peek command with optional rig prefix
+  const target = rig ? `${rig}/${polecat}` : polecat;
+
+  // Spawn gt peek process
+  const peekProcess = spawn(GT_BIN, ['peek', target], {
+    cwd: TOWN_ROOT,
+    env: { ...process.env, TERM: 'xterm-256color' }
+  });
+
+  const sessionId = `${target}-${Date.now()}`;
+  peekSessions.set(sessionId, { process: peekProcess, target, startTime: Date.now() });
+
+  // Send initial connection event
+  res.write(`event: connected\ndata: ${JSON.stringify({ target, sessionId })}\n\n`);
+
+  // Buffer for accumulating partial lines
+  let buffer = '';
+
+  // Stream stdout
+  peekProcess.stdout.on('data', (data) => {
+    buffer += data.toString();
+
+    // Send complete lines, keep partial line in buffer
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || ''; // Keep last partial line
+
+    for (const line of lines) {
+      if (line) {
+        res.write(`event: output\ndata: ${JSON.stringify({ stream: 'stdout', data: line })}\n\n`);
+      }
+    }
+  });
+
+  // Stream stderr
+  peekProcess.stderr.on('data', (data) => {
+    const text = data.toString();
+    res.write(`event: output\ndata: ${JSON.stringify({ stream: 'stderr', data: text })}\n\n`);
+  });
+
+  // Handle process exit
+  peekProcess.on('close', (code) => {
+    // Flush remaining buffer
+    if (buffer) {
+      res.write(`event: output\ndata: ${JSON.stringify({ stream: 'stdout', data: buffer })}\n\n`);
+    }
+    res.write(`event: close\ndata: ${JSON.stringify({ code, sessionId })}\n\n`);
+    peekSessions.delete(sessionId);
+    res.end();
+  });
+
+  peekProcess.on('error', (error) => {
+    res.write(`event: error\ndata: ${JSON.stringify({ error: error.message })}\n\n`);
+    peekSessions.delete(sessionId);
+    res.end();
+  });
+
+  // Cleanup on client disconnect
+  req.on('close', () => {
+    peekProcess.kill('SIGTERM');
+    peekSessions.delete(sessionId);
+  });
+});
+
+// Get metadata about a polecat session without streaming
+app.get('/api/peek/:polecat/info', async (req, res) => {
+  const { polecat } = req.params;
+  const { rig } = req.query;
+
+  const target = rig ? `${rig}/${polecat}` : polecat;
+
+  // Get hook status for the polecat
+  const hookResult = await runGt(`hook show ${target}`);
+
+  // Get crew/polecat status
+  const statusResult = await runGt(`crew status ${polecat}`,
+    rig ? path.join(TOWN_ROOT, rig) : TOWN_ROOT);
+
+  res.json({
+    target,
+    hook: hookResult.success ? hookResult.output.trim() : null,
+    status: statusResult.success ? statusResult.output.trim() : null,
+    error: !hookResult.success && !statusResult.success ? 'Unable to get polecat info' : null
+  });
+});
+
 // ==================== HOOK MANAGEMENT ====================
 
 // Get current hook status
@@ -821,6 +951,7 @@ app.get('/api/events', async (req, res) => {
 
 const server = createServer(app);
 const wss = new WebSocketServer({ server, path: '/ws' });
+const peekWss = new WebSocketServer({ server, path: '/ws/peek' });
 
 // Track connected clients
 const clients = new Set();
@@ -839,6 +970,125 @@ wss.on('connection', (ws) => {
   ws.on('close', () => {
     clients.delete(ws);
     console.log('WebSocket client disconnected');
+  });
+});
+
+// WebSocket peek handler - client sends: { action: 'peek', polecat: 'name', rig?: 'rigname' }
+peekWss.on('connection', (ws) => {
+  let peekProcess = null;
+  let sessionId = null;
+
+  console.log('Peek WebSocket client connected');
+
+  ws.on('message', (message) => {
+    try {
+      const msg = JSON.parse(message.toString());
+
+      if (msg.action === 'peek' && msg.polecat) {
+        // Clean up existing process if any
+        if (peekProcess) {
+          peekProcess.kill('SIGTERM');
+          if (sessionId) wsPeekSessions.delete(sessionId);
+        }
+
+        const target = msg.rig ? `${msg.rig}/${msg.polecat}` : msg.polecat;
+        sessionId = `ws-${target}-${Date.now()}`;
+
+        // Spawn peek process
+        peekProcess = spawn(GT_BIN, ['peek', target], {
+          cwd: TOWN_ROOT,
+          env: { ...process.env, TERM: 'xterm-256color' }
+        });
+
+        wsPeekSessions.set(sessionId, { process: peekProcess, target, ws, startTime: Date.now() });
+
+        // Send connection confirmation
+        ws.send(JSON.stringify({
+          type: 'connected',
+          target,
+          sessionId,
+          timestamp: Date.now()
+        }));
+
+        // Buffer for line accumulation
+        let buffer = '';
+
+        // Stream stdout
+        peekProcess.stdout.on('data', (data) => {
+          buffer += data.toString();
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+
+          for (const line of lines) {
+            if (line && ws.readyState === 1) {
+              ws.send(JSON.stringify({
+                type: 'output',
+                stream: 'stdout',
+                data: line,
+                timestamp: Date.now()
+              }));
+            }
+          }
+        });
+
+        // Stream stderr
+        peekProcess.stderr.on('data', (data) => {
+          if (ws.readyState === 1) {
+            ws.send(JSON.stringify({
+              type: 'output',
+              stream: 'stderr',
+              data: data.toString(),
+              timestamp: Date.now()
+            }));
+          }
+        });
+
+        // Handle process exit
+        peekProcess.on('close', (code) => {
+          if (buffer && ws.readyState === 1) {
+            ws.send(JSON.stringify({ type: 'output', stream: 'stdout', data: buffer }));
+          }
+          if (ws.readyState === 1) {
+            ws.send(JSON.stringify({ type: 'close', code, sessionId }));
+          }
+          wsPeekSessions.delete(sessionId);
+          peekProcess = null;
+        });
+
+        peekProcess.on('error', (error) => {
+          if (ws.readyState === 1) {
+            ws.send(JSON.stringify({ type: 'error', error: error.message }));
+          }
+          wsPeekSessions.delete(sessionId);
+          peekProcess = null;
+        });
+
+      } else if (msg.action === 'stop') {
+        // Stop current peek
+        if (peekProcess) {
+          peekProcess.kill('SIGTERM');
+          ws.send(JSON.stringify({ type: 'stopped', sessionId }));
+        }
+      } else if (msg.action === 'info') {
+        // Get session info
+        ws.send(JSON.stringify({
+          type: 'info',
+          active: !!peekProcess,
+          sessionId,
+          sessions: wsPeekSessions.size
+        }));
+      }
+    } catch (error) {
+      ws.send(JSON.stringify({ type: 'error', error: 'Invalid message format' }));
+    }
+  });
+
+  ws.on('close', () => {
+    console.log('Peek WebSocket client disconnected');
+    if (peekProcess) {
+      peekProcess.kill('SIGTERM');
+      if (sessionId) wsPeekSessions.delete(sessionId);
+    }
   });
 });
 
@@ -894,5 +1144,7 @@ setInterval(async () => {
 server.listen(PORT, () => {
   console.log(`Gas Town API running on http://localhost:${PORT}`);
   console.log(`WebSocket available at ws://localhost:${PORT}/ws`);
+  console.log(`Peek WebSocket at ws://localhost:${PORT}/ws/peek`);
+  console.log(`Peek SSE at http://localhost:${PORT}/api/peek/:polecat`);
   console.log(`Town root: ${TOWN_ROOT}`);
 });
