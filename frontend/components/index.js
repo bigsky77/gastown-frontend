@@ -7,4 +7,5 @@ export { default as EventList } from './EventList';
 export { default as RigList } from './RigList';
 export { default as RigManager } from './RigManager';
 export { default as MergeQueue } from './MergeQueue';
+export { default as DependencyGraph } from './DependencyGraph';
 export { getActivityClass, getEventStyle, ActivityDot, EVENT_STYLES } from './ActivityIndicator';

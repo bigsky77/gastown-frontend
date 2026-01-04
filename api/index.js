@@ -378,6 +378,68 @@ app.get('/api/issues/ready', async (req, res) => {
   }
 });
 
+// Get issue dependencies for graph visualization
+app.get('/api/issues/dependencies', async (req, res) => {
+  try {
+    // Get all issues with their dependency info
+    const issuesResult = await runBd('list --json');
+    if (!issuesResult.success) {
+      return res.status(500).json({ error: issuesResult.error });
+    }
+
+    const issues = parseJsonOutput(issuesResult.output) || [];
+    const dependencies = [];
+
+    // For each issue, get its dependencies via bd show
+    for (const issue of issues) {
+      const showResult = await runBd(`show ${issue.id} --json`);
+      if (showResult.success) {
+        const details = parseJsonOutput(showResult.output);
+        // Dependencies are issues this one depends on (blocks this issue)
+        if (details?.depends_on) {
+          for (const dep of details.depends_on) {
+            const depId = typeof dep === 'string' ? dep : dep.id;
+            if (depId) {
+              dependencies.push({
+                from: depId,       // Dependency (blocker)
+                to: issue.id,      // This issue (depends on blocker)
+              });
+            }
+          }
+        }
+        // Also check blocked_by field if present
+        if (details?.blocked_by) {
+          for (const blocker of details.blocked_by) {
+            const blockerId = typeof blocker === 'string' ? blocker : blocker.id;
+            if (blockerId) {
+              dependencies.push({
+                from: blockerId,
+                to: issue.id,
+              });
+            }
+          }
+        }
+      }
+    }
+
+    // Deduplicate dependencies
+    const seen = new Set();
+    const uniqueDeps = dependencies.filter(d => {
+      const key = `${d.from}->${d.to}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+
+    res.json({
+      issues,
+      dependencies: uniqueDeps,
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Get single issue
 app.get('/api/issues/:id', async (req, res) => {
   const result = await runBd(`show ${req.params.id} --json`);
