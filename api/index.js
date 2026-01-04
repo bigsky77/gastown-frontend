@@ -371,6 +371,94 @@ app.get('/api/rigs/:rig/polecats', async (req, res) => {
   }
 });
 
+// Get specific rig status
+app.get('/api/rigs/:rig/status', async (req, res) => {
+  const rigName = req.params.rig;
+  try {
+    // Get polecat info
+    const polecatResult = await runGt(`polecat list ${rigName}`);
+
+    // Parse polecat output
+    const polecats = [];
+    if (polecatResult.success) {
+      const lines = polecatResult.output.split('\n');
+      for (const line of lines) {
+        const match = line.match(/^\s*(\S+)\s*(?:\[([^\]]+)\])?\s*(.*)$/);
+        if (match && match[1] && !match[1].includes(':')) {
+          polecats.push({
+            name: match[1],
+            status: match[2] || 'unknown',
+            info: match[3]?.trim() || ''
+          });
+        }
+      }
+    }
+
+    // Check for running agents
+    const agents = ['witness', 'refinery', 'mayor'].map(name => ({
+      name,
+      running: false // Would need process check to determine
+    }));
+
+    res.json({
+      rig: rigName,
+      polecats,
+      agents,
+      raw: polecatResult.output
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Create new rig
+app.post('/api/rigs', async (req, res) => {
+  const { name } = req.body;
+  if (!name) {
+    return res.status(400).json({ error: 'name required' });
+  }
+  // Validate rig name (alphanumeric, hyphens, underscores)
+  if (!/^[a-zA-Z0-9_-]+$/.test(name)) {
+    return res.status(400).json({ error: 'Invalid rig name. Use only letters, numbers, hyphens, underscores.' });
+  }
+  const result = await runGt(`rig add ${name}`);
+  if (result.success) {
+    res.json({ success: true, name, output: result.output });
+  } else {
+    res.status(500).json({ error: result.error || result.stderr });
+  }
+});
+
+// Delete rig
+app.delete('/api/rigs/:rig', async (req, res) => {
+  const rigName = req.params.rig;
+  const result = await runGt(`rig remove ${rigName}`);
+  if (result.success) {
+    res.json({ success: true, name: rigName });
+  } else {
+    res.status(500).json({ error: result.error || result.stderr });
+  }
+});
+
+// Spawn polecat in rig
+app.post('/api/rigs/:rig/polecat', async (req, res) => {
+  const rigName = req.params.rig;
+  const { name } = req.body;
+
+  // gt polecat spawn <rig> [name]
+  let cmd = `polecat spawn ${rigName}`;
+  if (name) {
+    cmd += ` ${name}`;
+  }
+
+  const result = await runGt(cmd);
+  if (result.success) {
+    res.json({ success: true, rig: rigName, name: name || 'auto', output: result.output });
+  } else {
+    res.status(500).json({ error: result.error || result.stderr });
+  }
+});
+
 // ==================== SLING WORK ====================
 
 // Sling issue to rig
