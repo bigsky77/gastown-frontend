@@ -689,6 +689,41 @@ app.post('/api/mail', async (req, res) => {
   }
 });
 
+// Mark message as read/unread
+app.patch('/api/mail/:id/read', async (req, res) => {
+  const { read } = req.body;
+  const markAs = read ? 'read' : 'unread';
+  const result = await runGt(`mail mark ${req.params.id} --${markAs}`);
+  if (result.success) {
+    res.json({ success: true, id: req.params.id, read });
+  } else {
+    // If gt mail mark doesn't exist, try updating via beads
+    // Messages are beads, so we can update their metadata
+    const bdResult = await runBd(`update ${req.params.id} --read=${read}`);
+    if (bdResult.success) {
+      res.json({ success: true, id: req.params.id, read });
+    } else {
+      res.status(500).json({ error: result.error || 'Mark command not available' });
+    }
+  }
+});
+
+// Delete mail message
+app.delete('/api/mail/:id', async (req, res) => {
+  const result = await runGt(`mail delete ${req.params.id}`);
+  if (result.success) {
+    res.json({ success: true, id: req.params.id });
+  } else {
+    // If gt mail delete doesn't exist, try closing/archiving the bead
+    const bdResult = await runBd(`close ${req.params.id} --reason="Deleted by user"`);
+    if (bdResult.success) {
+      res.json({ success: true, id: req.params.id });
+    } else {
+      res.status(500).json({ error: result.error || 'Delete command not available' });
+    }
+  }
+});
+
 // ==================== AGENT ENDPOINTS ====================
 
 // List agents
