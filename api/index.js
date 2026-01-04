@@ -605,26 +605,44 @@ app.get('/api/deps/graph', async (req, res) => {
         res.status(500).json({ error: result.error });
       }
     } else {
-      // Default: get all issues with their deps
-      const listResult = await runBd('list --json');
+      // Default: get all issues and blocked issues to build graph
+      const [listResult, blockedResult] = await Promise.all([
+        runBd('list --json'),
+        runBd('blocked --json')
+      ]);
+
       if (listResult.success) {
         const issues = parseJsonOutput(listResult.output) || [];
-        // Build graph structure from blocked_by fields
+        const blockedIssues = blockedResult.success ? parseJsonOutput(blockedResult.output) || [] : [];
+
+        // Build a map of blocked_by relationships from blocked issues
+        const blockedByMap = {};
+        for (const bi of blockedIssues) {
+          if (bi.blocked_by) {
+            blockedByMap[bi.id] = bi.blocked_by;
+          }
+        }
+
+        // Build graph structure
         const nodes = issues.map(i => ({
           id: i.id,
           title: i.title,
           status: i.status,
           priority: i.priority,
-          blocked_by: i.blocked_by || []
+          dependency_count: i.dependency_count || 0,
+          dependent_count: i.dependent_count || 0,
+          blocked_by: blockedByMap[i.id] || []
         }));
+
         const edges = [];
-        for (const issue of issues) {
+        for (const issue of blockedIssues) {
           if (issue.blocked_by) {
             for (const dep of issue.blocked_by) {
               edges.push({ from: dep, to: issue.id });
             }
           }
         }
+
         res.json({ nodes, edges });
       } else {
         res.status(500).json({ error: listResult.error });
