@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import Head from 'next/head';
 import SessionPeek from '../components/SessionPeek';
+import AgentLifecycle from '../components/AgentLifecycle';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:3001/ws';
@@ -295,10 +296,10 @@ export default function Dashboard() {
 
       <div className="container">
         <div className="tabs">
-          {['control', 'convoys', 'issues', 'agents', 'peek', 'events'].map(tab => (
+          {['control', 'convoys', 'issues', 'agents', 'peek', 'lifecycle', 'events'].map(tab => (
             <button key={tab} className={`tab ${activeTab === tab ? 'active' : ''}`}
               onClick={() => setActiveTab(tab)}>
-              {tab === 'peek' ? '👀 Peek' : tab.charAt(0).toUpperCase() + tab.slice(1)}
+              {tab === 'peek' ? '👀 Peek' : tab === 'lifecycle' ? 'Lifecycle' : tab.charAt(0).toUpperCase() + tab.slice(1)}
             </button>
           ))}
         </div>
@@ -317,6 +318,7 @@ export default function Dashboard() {
                   {activeTab === 'issues' && <IssueList issues={issues} rigs={rigs} onSling={slingIssue} />}
                   {activeTab === 'agents' && <AgentList status={status} onNudge={nudgeAgent} />}
                   {activeTab === 'peek' && <SessionPeek status={status} onNudge={nudgeAgent} apiUrl={API_URL} />}
+                  {activeTab === 'lifecycle' && <AgentLifecycle onRefresh={fetchAll} />}
                   {activeTab === 'events' && <EventList events={events} />}
                 </>
               )}
