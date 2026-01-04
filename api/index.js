@@ -255,6 +255,80 @@ app.get('/api/rigs/:name/status', async (req, res) => {
   });
 });
 
+// ==================== MERGE QUEUE ENDPOINTS ====================
+
+// List merge queue items for a rig
+app.get('/api/rigs/:rig/mq', async (req, res) => {
+  const { status, worker, ready, epic } = req.query;
+  const rigPath = path.join(TOWN_ROOT, req.params.rig);
+
+  let args = `mq list ${req.params.rig} --json`;
+  if (status) args += ` --status=${status}`;
+  if (worker) args += ` --worker=${worker}`;
+  if (ready === 'true') args += ' --ready';
+  if (epic) args += ` --epic=${epic}`;
+
+  const result = await runGt(args, rigPath);
+  if (result.success) {
+    const data = parseJsonOutput(result.output);
+    res.json(data || { items: [], raw: result.output });
+  } else {
+    res.status(500).json({ error: result.error });
+  }
+});
+
+// Approve/process a merge request (uses retry --now to trigger immediate processing)
+app.post('/api/rigs/:rig/mq/:id/approve', async (req, res) => {
+  const rigPath = path.join(TOWN_ROOT, req.params.rig);
+
+  // Use retry --now to trigger immediate processing
+  const result = await runGt(`mq retry ${req.params.rig} ${req.params.id} --now`, rigPath);
+  if (result.success) {
+    res.json({ success: true, id: req.params.id, output: result.output });
+  } else {
+    res.status(500).json({ error: result.error });
+  }
+});
+
+// Reject a merge request
+app.post('/api/rigs/:rig/mq/:id/reject', async (req, res) => {
+  const { reason, notify } = req.body;
+  const rigPath = path.join(TOWN_ROOT, req.params.rig);
+
+  if (!reason) {
+    return res.status(400).json({ error: 'reason required' });
+  }
+
+  let cmd = `mq reject ${req.params.rig} ${req.params.id} --reason="${reason.replace(/"/g, '\\"')}"`;
+  if (notify) cmd += ' --notify';
+
+  const result = await runGt(cmd, rigPath);
+  if (result.success) {
+    res.json({ success: true, id: req.params.id, output: result.output });
+  } else {
+    res.status(500).json({ error: result.error });
+  }
+});
+
+// Get refinery status for a rig
+app.get('/api/rigs/:rig/refinery/status', async (req, res) => {
+  const rigPath = path.join(TOWN_ROOT, req.params.rig);
+
+  const result = await runGt(`refinery status ${req.params.rig} --json`, rigPath);
+  if (result.success) {
+    const data = parseJsonOutput(result.output);
+    res.json(data || { raw: result.output });
+  } else {
+    // Try without --json for fallback
+    const result2 = await runGt(`refinery status ${req.params.rig}`, rigPath);
+    if (result2.success) {
+      res.json({ raw: result2.output });
+    } else {
+      res.status(500).json({ error: result.error || result2.error });
+    }
+  }
+});
+
 // ==================== CONVOY ENDPOINTS ====================
 
 // List convoys
