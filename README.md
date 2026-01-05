@@ -1,21 +1,27 @@
 # Gas Town Frontend
 
-A minimal web dashboard for Gas Town - the multi-agent orchestration system.
+A web dashboard for **Gas Town** - the multi-agent orchestration system for autonomous Claude Code agents.
 
-## Architecture
+## Documentation
+
+- **[Architecture Overview](docs/ARCHITECTURE.md)** - System design, data flow, API reference
+- **[Component Reference](docs/COMPONENTS.md)** - React component documentation
+
+## Project Structure
 
 ```
 gastown-frontend/
 ├── api/                    # Express API (wraps gt/bd CLI)
-│   ├── index.js           # Main server
-│   └── package.json
+│   └── index.js           # REST endpoints + WebSocket
 ├── frontend/              # Next.js React app
-│   ├── pages/
-│   │   ├── _app.js
-│   │   └── index.js       # Main dashboard
-│   ├── styles/
-│   │   └── globals.css    # Dark theme styling
-│   └── package.json
+│   ├── components/        # UI components (14 total)
+│   ├── pages/             # Next.js pages
+│   └── styles/            # Dark theme CSS
+├── lib/                   # Shared client SDK
+│   └── gastown.js         # API client functions
+├── docs/                  # Documentation
+│   ├── ARCHITECTURE.md    # System design
+│   └── COMPONENTS.md      # React component docs
 └── start.sh               # Dev startup script
 ```
 
@@ -69,13 +75,24 @@ Real-time updates:
 - `{ type: 'event', data: {...} }` - New events
 - `{ type: 'status', data: {...} }` - Status updates
 
-## Frontend Features
+## Features
 
-- **Convoy Dashboard**: Track batch work with progress bars and activity indicators
-- **Issue List**: View and filter open issues
-- **Mail Inbox**: Read agent messages
-- **Event Feed**: Real-time activity stream
-- **Rig Overview**: Quick view of configured rigs
+### Work Management
+- **Convoy Dashboard** - Track batch work progress with visual indicators
+- **Issue Browser** - View, filter, and manage issues (tasks, bugs, features)
+- **Dependency Graph** - Interactive visualization of issue dependencies
+- **Control Panel** - Create issues and dispatch work to agents
+
+### Agent Operations
+- **Agent Status** - Monitor all agents (Mayor, Witness, Refinery, Polecats)
+- **Lifecycle Controls** - Start/stop/restart agents from the UI
+- **Session Peek** - View live agent session logs
+- **Merge Queue** - Track and manage pending merge requests
+
+### Communication
+- **Mail Thread** - Read and send messages between agents
+- **Event Feed** - Real-time activity stream with filtering
+- **Rig Manager** - Configure and manage project rigs
 
 ## Integration with Autonomous Claude Platform
 
